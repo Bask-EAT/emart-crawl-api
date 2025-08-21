@@ -9,7 +9,8 @@ from typing import Dict, Union, List
 import random
 from typing import Optional
 from threading import Event
-
+from dotenv import load_dotenv
+import os
 
 # ==============================================================================
 # 1. Firebase 연동 및 스크래핑 로직 (기존과 동일)
@@ -123,12 +124,20 @@ def find_and_update_stale_products(stop_event: Optional[Event] = None):
     try:
         initialize_firebase()
         db = firestore.client()
-        one_day_ago_iso = (datetime.now() - timedelta(days=7)).isoformat()
-        print(f"🚀 기준 시간: {one_day_ago_iso} 이전에 업데이트된 상품을 찾습니다.\n")
+
+        load_dotenv()
+        try:
+            # .env 파일에서 값을 읽어오되, 없으면 기본값 7일 사용
+            stale_days = int(os.getenv("STALE_DAYS", "7"))
+        except (ValueError, TypeError):
+            stale_days = 7 # 값이 숫자가 아니면 기본값 7일 사용
+        
+        ago_iso = (datetime.now() - timedelta(days=stale_days)).isoformat()
+        print(f"🚀 기준 시간: {ago_iso} 이전에 업데이트된 상품을 찾습니다.\n")
         product_collection_ref = db.collection("emart_product")
 
         query = product_collection_ref.where(
-            filter=FieldFilter("last_updated", "<", one_day_ago_iso)
+            filter=FieldFilter("last_updated", "<", ago_iso)
         )
         docs_to_update = list(query.stream())
 
@@ -153,7 +162,7 @@ def find_and_update_stale_products(stop_event: Optional[Event] = None):
 
         # 쿼리를 사용하여 기준 시간보다 오래된 가격 문서를 찾습니다.
         price_query = price_collection_ref.where(
-            filter=FieldFilter("last_updated", "<", one_day_ago_iso)
+            filter=FieldFilter("last_updated", "<", ago_iso)
         )
         docs_to_delete = list(price_query.stream())
 
