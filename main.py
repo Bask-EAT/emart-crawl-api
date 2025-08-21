@@ -362,6 +362,8 @@ async def save_env(request: Request):
         "ALL_MINUTE",
         "PRICE_HOUR",
         "PRICE_MINUTE",
+        "OLD_HOUR",
+        "OLD_MINUTE",
     ]:
         if k in data:
             env_dict[k] = str(data[k]).strip()
