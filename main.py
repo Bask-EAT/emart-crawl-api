@@ -17,6 +17,8 @@ from apscheduler.schedulers.base import STATE_RUNNING, STATE_PAUSED, STATE_STOPP
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
+from update_old_products import scan_old_to_product
+
 # === 경로 고정된 .env ===
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
@@ -88,6 +90,8 @@ ENV_KEYS = [
     "ALL_MINUTE",
     "PRICE_HOUR",
     "PRICE_MINUTE",
+    "OLD_HOUR",
+    "OLD_MINUTE",
 ]
 
 
@@ -130,6 +134,19 @@ def scheduler_price():
         print(f"정기 작업(가격) 오류: {e}")
 
 
+def scheduler_old():
+    """오래된 작업 스크래핑 후 업로드 or 삭제"""
+    try:
+        if CANCEL_EVENT.is_set():
+            print("===== 정기 작업 SKIP: CANCEL_EVENT set =====")
+            return
+        print("===== 정기 작업 시작: 상품 가격 스크래핑 =====")
+        scan_old_to_product(CANCEL_EVENT)
+        print("===== 모든 정기 작업 완료 =====")
+    except Exception as e:
+        print(f"정기 작업(가격) 오류: {e}")
+
+
 # ---------------------------
 # lifespan: 스케줄러 일원화
 # ---------------------------
@@ -141,10 +158,13 @@ async def lifespan(app: FastAPI):
     env = _read_env_as_dict(ENV_PATH)
     # ALL: 기본 3:00 (빈값이면 기본 적용)
     ALL_HOUR = env.get("ALL_HOUR", "").strip() or "3"
-    ALL_MINUTE = env.get("ALL_MINUTE", "").strip() or "0"
+    ALL_MINUTE = env.get("ALL_MINUTE", "").strip() or "30"
     # PRICE: 기본 *:30 (빈값이면 '*'와 '30'로 해석)
-    PRICE_HOUR = env.get("PRICE_HOUR", "").strip() or "*"
+    PRICE_HOUR = env.get("PRICE_HOUR", "").strip() or "1-2,5-23"
     PRICE_MINUTE = env.get("PRICE_MINUTE", "").strip() or "30"
+    # OLD: 기본 3:00 (빈값이면 기본 적용)
+    OLD_HOUR = env.get("OLD_HOUR", "").strip() or "4"
+    OLD_MINUTE = env.get("OLD_MINUTE", "").strip() or "30"
 
     # 전체 스크랩 + 업로드
     sched.add_job(
@@ -172,11 +192,24 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         misfire_grace_time=120,
     )
+    # 오래된 상품 스크랩 or 삭제
+    sched.add_job(
+        scheduler_old,
+        "cron",
+        id="job_old",  # 프론트와의 계약: 고정 ID
+        hour=OLD_HOUR,
+        minute=OLD_MINUTE,
+        second=0,  # 통일
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=120,
+    )
 
     sched.start()
     app.state.scheduler = sched
     print(
-        f"스케줄러 시작: all({ALL_HOUR}:{ALL_MINUTE}), price({PRICE_HOUR}:{PRICE_MINUTE})"
+        f"스케줄러 시작: all({ALL_HOUR}:{ALL_MINUTE}), price({PRICE_HOUR}:{PRICE_MINUTE}), old({OLD_HOUR}:{OLD_MINUTE})"
     )
     try:
         yield
@@ -519,6 +552,7 @@ async def get_scheduler_config(request: Request):
     sched = request.app.state.scheduler
     all_job = sched.get_job("job_all")
     price_job = sched.get_job("job_price")
+    old_job = sched.get_job("job_old")
     return {
         "status": "success",
         "timezone": "Asia/Seoul",
@@ -535,6 +569,14 @@ async def get_scheduler_config(request: Request):
             "next_run_time": (
                 price_job.next_run_time.isoformat()
                 if price_job and price_job.next_run_time
+                else None
+            ),
+        },
+        "old": {
+            **_cron_of(old_job),
+            "next_run_time": (
+                old_job.next_run_time.isoformat()
+                if old_job and old_job.next_run_time
                 else None
             ),
         },
@@ -592,6 +634,21 @@ async def set_scheduler_config(request: Request):
         if upd:
             updates.append(("job_price", upd))
 
+    # --- old ---
+    if "old" in body:
+        p = body["old"] or {}
+        upd = {}
+        if "hour" in p:
+            h = _validate_cron_field(p.get("hour"), "hour", (0, 23))
+            if h is not None:
+                upd["hour"] = h
+        if "minute" in p:
+            m = _validate_cron_field(p.get("minute"), "minute", (0, 59))
+            if m is not None:
+                upd["minute"] = m
+        if upd:
+            updates.append(("job_old", upd))
+
     # 실제로 변경된 잡만 반영 & persist 대상으로 기록
     effective: dict[str, dict] = {}
     for job_id, fields in updates:
@@ -599,6 +656,14 @@ async def set_scheduler_config(request: Request):
         base = _current_cron(job)  # 기존 cron 확보
         base.update({k: str(v) for k, v in fields.items()})  # 변경분 덮어쓰기
         base["second"] = "0"
+
+        target_func = None
+        if job_id == "job_all":
+            target_func = scheduler_all
+        elif job_id == "job_price":
+            target_func = scheduler_price
+        elif job_id == "job_old":
+            target_func = scheduler_old  # 'old' 작업을 위한 함수
 
         if job:
             sched.reschedule_job(
@@ -611,7 +676,7 @@ async def set_scheduler_config(request: Request):
             )
         else:
             sched.add_job(
-                scheduler_all if job_id == "job_all" else scheduler_price,
+                target_func,
                 "cron",
                 id=job_id,
                 timezone=KST,
@@ -634,7 +699,16 @@ async def set_scheduler_config(request: Request):
             return "" if str(v).strip() == "*" else str(v)
 
         for job_id, merged in effective.items():
-            prefix = "ALL" if job_id == "job_all" else "PRICE"
+            # 'job_old'를 처리하기 위해 이 부분을 수정합니다.
+            if job_id == "job_all":
+                prefix = "ALL"
+            elif job_id == "job_price":
+                prefix = "PRICE"
+            elif job_id == "job_old":
+                prefix = "OLD"
+            else:
+                # 예상치 못한 job_id는 건너뛰기
+                continue
             env_dict[f"{prefix}_HOUR"] = _to_env(merged["hour"])
             env_dict[f"{prefix}_MINUTE"] = _to_env(merged["minute"])
 
@@ -647,10 +721,15 @@ async def set_scheduler_config(request: Request):
 
 @app.post("/scheduler/run-now")
 async def scheduler_run_now(
-    request: Request, which: str = Query("all", pattern="^(all|price)$")
+    request: Request, which: str = Query("all", pattern="^(all|price|old)$")
 ):
     sched = request.app.state.scheduler
-    job_id = "job_all" if which == "all" else "job_price"
+    if which == "all":
+        job_id = "job_all"
+    elif which == "price":
+        job_id = "job_price"
+    else: # which == "old"
+        job_id = "job_old"
     job = sched.get_job(job_id)
     if not job:
         raise HTTPException(404, "job not found")
