@@ -9,8 +9,6 @@ from typing import Dict, Union, List
 import random
 from typing import Optional
 from threading import Event
-from dotenv import load_dotenv
-import os
 
 # ==============================================================================
 # 1. Firebase 연동 및 스크래핑 로직 (기존과 동일)
@@ -125,14 +123,7 @@ def find_and_update_stale_products(stop_event: Optional[Event] = None):
         initialize_firebase()
         db = firestore.client()
 
-        load_dotenv()
-        try:
-            # .env 파일에서 값을 읽어오되, 없으면 기본값 7일 사용
-            stale_days = int(os.getenv("STALE_DAYS", "7"))
-        except (ValueError, TypeError):
-            stale_days = 7 # 값이 숫자가 아니면 기본값 7일 사용
-        
-        ago_iso = (datetime.now() - timedelta(days=stale_days)).isoformat()
+        ago_iso = (datetime.now() - timedelta(days=7)).isoformat()
         print(f"🚀 기준 시간: {ago_iso} 이전에 업데이트된 상품을 찾습니다.\n")
         product_collection_ref = db.collection("emart_product")
 
