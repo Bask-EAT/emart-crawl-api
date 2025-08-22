@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: emart_crawl_app
+    ports:
+      - 8420:8420
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    restart: unless-stopped
+    command: null
+volumes: {}
