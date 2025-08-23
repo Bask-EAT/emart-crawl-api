@@ -1,16 +1,20 @@
-version: "3.9"
 services:
-  app:
+  scrape:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: emart_crawl_app
+    image: scrape:latest
+    container_name: scrape
     ports:
-      - 8420:8420
+      - "8420:8420"
     env_file:
       - .env
     volumes:
       - ./:/app
     restart: unless-stopped
-    command: null
-volumes: {}
+    networks:
+      - edge-net
+
+networks:
+  edge-net:
+    external: true

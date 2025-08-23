@@ -22,4 +22,4 @@ USER appuser
 EXPOSE 8420
 
 ENTRYPOINT ["uvicorn"]
-CMD ["server:app", "--host", "0.0.0.0", "--port", "8420", "--workers", "2"]
+CMD ["main:app", "--host", "0.0.0.0", "--port", "8420", "--workers", "2"]
